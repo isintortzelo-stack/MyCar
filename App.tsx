@@ -100,6 +100,7 @@ const DEFAULT_REMINDERS: CarReminders = {
 type ScheduleCarNotificationOptions = {
   immediateKinds?: ReminderKind[];
   onImmediateAlarm?: (alarm: ReminderAlarm) => void;
+  testDelaySeconds?: number;
 };
 
 type NativeAlarmPayload = ReminderAlarm & {
@@ -483,6 +484,7 @@ async function scheduleCarNotifications(
         return;
       }
 
+      const delaySeconds = options.testDelaySeconds || 1;
       await Notifications.scheduleNotificationAsync({
         content: {
           title,
@@ -493,12 +495,14 @@ async function scheduleCarNotifications(
         },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-          seconds: 1,
+          seconds: delaySeconds,
           channelId: "reminders"
         }
       });
-      scheduleNativeAlarm(alarm, Date.now() + 1000);
-      options.onImmediateAlarm?.(alarm);
+      scheduleNativeAlarm(alarm, Date.now() + delaySeconds * 1000);
+      if (!options.testDelaySeconds) {
+        options.onImmediateAlarm?.(alarm);
+      }
       return;
     }
 
@@ -1365,6 +1369,27 @@ function App() {
 
   }
 
+  function getReminderToggleOptions(
+    value: boolean,
+    kind: ReminderKind
+  ): ScheduleCarNotificationOptions {
+    if (!value) {
+      return { immediateKinds: [] };
+    }
+
+    if (selectedCar?.isReminderTest) {
+      setTestReminderStatus(
+        "Test alarm armed. Lock the phone or switch apps now; it should fire in about 10 seconds."
+      );
+      return {
+        immediateKinds: [kind],
+        testDelaySeconds: 10
+      };
+    }
+
+    return { immediateKinds: [kind] };
+  }
+
   if (loading) {
     return (
       <SafeAreaProvider>
@@ -1632,7 +1657,7 @@ function App() {
                         motEnabled: value
                       }
                     }),
-                    { immediateKinds: value ? ["mot"] : [] }
+                    getReminderToggleOptions(value, "mot")
                   )
                 }
               >
@@ -1666,7 +1691,7 @@ function App() {
                         roadTaxEnabled: value
                       }
                     }),
-                    { immediateKinds: value ? ["roadTax"] : [] }
+                    getReminderToggleOptions(value, "roadTax")
                   )
                 }
               >
@@ -1700,7 +1725,7 @@ function App() {
                         insuranceEnabled: value
                       }
                     }),
-                    { immediateKinds: value ? ["insurance"] : [] }
+                    getReminderToggleOptions(value, "insurance")
                   )
                 }
               >
