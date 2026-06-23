@@ -52,6 +52,7 @@ type DvlaVehicle = {
 };
 
 type ReminderOffsetDays = 1 | 7 | 30;
+type ReminderKind = "mot" | "roadTax" | "insurance";
 
 type CarReminders = {
   motEnabled: boolean;
@@ -84,6 +85,10 @@ const DEFAULT_REMINDERS: CarReminders = {
   motOffsetDays: 30,
   roadTaxOffsetDays: 30,
   insuranceOffsetDays: 30
+};
+
+type ScheduleCarNotificationOptions = {
+  immediateKinds?: ReminderKind[];
 };
 
 const NOTIFICATIONS_SUPPORTED = true;
@@ -362,13 +367,18 @@ async function cancelCarNotifications(car: StoredCar) {
   );
 }
 
-async function scheduleCarNotifications(car: StoredCar) {
+async function scheduleCarNotifications(
+  car: StoredCar,
+  options: ScheduleCarNotificationOptions = {}
+) {
   await cancelCarNotifications(car);
 
   const hasPermissions = await registerForNotifications();
   const notificationIds: string[] = [];
+  const immediateKinds = new Set(options.immediateKinds || []);
 
   async function scheduleOne(
+    kind: ReminderKind,
     title: string,
     label: string,
     eventDate: Date | null,
@@ -391,6 +401,10 @@ async function scheduleCarNotifications(car: StoredCar) {
     }
 
     if (getWholeDaysUntil(eventDate) <= offsetDays) {
+      if (!immediateKinds.has(kind)) {
+        return;
+      }
+
       await Notifications.scheduleNotificationAsync({
         content: {
           title,
@@ -424,6 +438,7 @@ async function scheduleCarNotifications(car: StoredCar) {
 
   if (car.reminders.motEnabled) {
     await scheduleOne(
+      "mot",
       `${car.registrationNumber} MOT reminder`,
       "MOT",
       car.dvla?.motExpiryDate ? new Date(car.dvla.motExpiryDate) : null,
@@ -433,6 +448,7 @@ async function scheduleCarNotifications(car: StoredCar) {
 
   if (car.reminders.roadTaxEnabled) {
     await scheduleOne(
+      "roadTax",
       `${car.registrationNumber} road tax reminder`,
       "Road tax",
       car.dvla?.taxDueDate ? new Date(car.dvla.taxDueDate) : null,
@@ -442,6 +458,7 @@ async function scheduleCarNotifications(car: StoredCar) {
 
   if (car.reminders.insuranceEnabled) {
     await scheduleOne(
+      "insurance",
       `${car.registrationNumber} insurance reminder`,
       "Insurance",
       parseManualDate(car.insuranceExpiry),
@@ -1081,14 +1098,21 @@ function App() {
     }
   }
 
-  async function updateCar(id: string, updater: (car: StoredCar) => StoredCar) {
+  async function updateCar(
+    id: string,
+    updater: (car: StoredCar) => StoredCar,
+    notificationOptions?: ScheduleCarNotificationOptions
+  ) {
     const existingCar = cars.find((car) => car.id === id);
     if (!existingCar) {
       return;
     }
 
     const updatedCar = updater(existingCar);
-    const notificationIds = await scheduleCarNotifications(updatedCar);
+    const notificationIds = await scheduleCarNotifications(
+      updatedCar,
+      notificationOptions
+    );
     const nextCars = cars.map((car) =>
       car.id === id
         ? {
@@ -1125,11 +1149,19 @@ function App() {
       return;
     }
 
-    await updateCar(selectedCar.id, (current) => ({
-      ...current,
-      nickname: nicknameInput.trim(),
-      insuranceExpiry: insuranceExpiryInput.trim()
-    }));
+    const insuranceExpiry = insuranceExpiryInput.trim();
+    const immediateKinds =
+      insuranceExpiry !== selectedCar.insuranceExpiry ? ["insurance" as const] : [];
+
+    await updateCar(
+      selectedCar.id,
+      (current) => ({
+        ...current,
+        nickname: nicknameInput.trim(),
+        insuranceExpiry
+      }),
+      { immediateKinds }
+    );
     Alert.alert("Saved", "Car details updated.");
   }
 
@@ -1147,19 +1179,34 @@ function App() {
       return;
     }
 
-    await updateCar(selectedCar.id, (current) => ({
-      ...current,
-      insuranceExpiry,
-      lastUpdatedAt: new Date().toISOString(),
-      dvla: {
-        ...(current.dvla || {
-          registrationNumber: current.registrationNumber
-        }),
-        registrationNumber: current.registrationNumber,
-        taxDueDate,
-        motExpiryDate
-      }
-    }));
+    const immediateKinds: ReminderKind[] = [];
+    if (motExpiryDate !== selectedCar.dvla?.motExpiryDate) {
+      immediateKinds.push("mot");
+    }
+    if (taxDueDate !== selectedCar.dvla?.taxDueDate) {
+      immediateKinds.push("roadTax");
+    }
+    if (insuranceExpiry !== selectedCar.insuranceExpiry) {
+      immediateKinds.push("insurance");
+    }
+
+    await updateCar(
+      selectedCar.id,
+      (current) => ({
+        ...current,
+        insuranceExpiry,
+        lastUpdatedAt: new Date().toISOString(),
+        dvla: {
+          ...(current.dvla || {
+            registrationNumber: current.registrationNumber
+          }),
+          registrationNumber: current.registrationNumber,
+          taxDueDate,
+          motExpiryDate
+        }
+      }),
+      { immediateKinds }
+    );
 
     setTestMotExpiryInput(motExpiryDate);
     setTestRoadTaxInput(taxDueDate);
@@ -1426,25 +1473,33 @@ function App() {
                 label="MOT"
                 value={selectedCar.reminders.motEnabled}
                 onValueChange={(value) =>
-                  void updateCar(selectedCar.id, (current) => ({
-                    ...current,
-                    reminders: {
-                      ...current.reminders,
-                      motEnabled: value
-                    }
-                  }))
+                  void updateCar(
+                    selectedCar.id,
+                    (current) => ({
+                      ...current,
+                      reminders: {
+                        ...current.reminders,
+                        motEnabled: value
+                      }
+                    }),
+                    { immediateKinds: value ? ["mot"] : [] }
+                  )
                 }
               >
                 <ReminderOffsetControl
                   value={selectedCar.reminders.motOffsetDays}
                   onChange={(days) =>
-                    void updateCar(selectedCar.id, (current) => ({
-                      ...current,
-                      reminders: {
-                        ...current.reminders,
-                        motOffsetDays: days
-                      }
-                    }))
+                    void updateCar(
+                      selectedCar.id,
+                      (current) => ({
+                        ...current,
+                        reminders: {
+                          ...current.reminders,
+                          motOffsetDays: days
+                        }
+                      }),
+                      { immediateKinds: ["mot"] }
+                    )
                   }
                 />
               </ToggleRow>
@@ -1452,25 +1507,33 @@ function App() {
                 label="Road Tax"
                 value={selectedCar.reminders.roadTaxEnabled}
                 onValueChange={(value) =>
-                  void updateCar(selectedCar.id, (current) => ({
-                    ...current,
-                    reminders: {
-                      ...current.reminders,
-                      roadTaxEnabled: value
-                    }
-                  }))
+                  void updateCar(
+                    selectedCar.id,
+                    (current) => ({
+                      ...current,
+                      reminders: {
+                        ...current.reminders,
+                        roadTaxEnabled: value
+                      }
+                    }),
+                    { immediateKinds: value ? ["roadTax"] : [] }
+                  )
                 }
               >
                 <ReminderOffsetControl
                   value={selectedCar.reminders.roadTaxOffsetDays}
                   onChange={(days) =>
-                    void updateCar(selectedCar.id, (current) => ({
-                      ...current,
-                      reminders: {
-                        ...current.reminders,
-                        roadTaxOffsetDays: days
-                      }
-                    }))
+                    void updateCar(
+                      selectedCar.id,
+                      (current) => ({
+                        ...current,
+                        reminders: {
+                          ...current.reminders,
+                          roadTaxOffsetDays: days
+                        }
+                      }),
+                      { immediateKinds: ["roadTax"] }
+                    )
                   }
                 />
               </ToggleRow>
@@ -1478,25 +1541,33 @@ function App() {
                 label="Insurance"
                 value={selectedCar.reminders.insuranceEnabled}
                 onValueChange={(value) =>
-                  void updateCar(selectedCar.id, (current) => ({
-                    ...current,
-                    reminders: {
-                      ...current.reminders,
-                      insuranceEnabled: value
-                    }
-                  }))
+                  void updateCar(
+                    selectedCar.id,
+                    (current) => ({
+                      ...current,
+                      reminders: {
+                        ...current.reminders,
+                        insuranceEnabled: value
+                      }
+                    }),
+                    { immediateKinds: value ? ["insurance"] : [] }
+                  )
                 }
               >
                 <ReminderOffsetControl
                   value={selectedCar.reminders.insuranceOffsetDays}
                   onChange={(days) =>
-                    void updateCar(selectedCar.id, (current) => ({
-                      ...current,
-                      reminders: {
-                        ...current.reminders,
-                        insuranceOffsetDays: days
-                      }
-                    }))
+                    void updateCar(
+                      selectedCar.id,
+                      (current) => ({
+                        ...current,
+                        reminders: {
+                          ...current.reminders,
+                          insuranceOffsetDays: days
+                        }
+                      }),
+                      { immediateKinds: ["insurance"] }
+                    )
                   }
                 />
               </ToggleRow>
