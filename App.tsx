@@ -475,6 +475,31 @@ async function scheduleCarNotifications(
       dueDate: eventDate.toISOString()
     };
     const triggerDate = subtractDays(eventDate, offsetDays);
+
+    if (options.testDelaySeconds && immediateKinds.has(kind)) {
+      const triggerAtMillis = Date.now() + options.testDelaySeconds * 1000;
+      scheduleNativeAlarm(alarm, triggerAtMillis);
+
+      if (hasPermissions) {
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title,
+            body,
+            sound: "default",
+            priority: Notifications.AndroidNotificationPriority.MAX,
+            data: alarm
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+            seconds: options.testDelaySeconds,
+            channelId: "reminders"
+          }
+        });
+      }
+
+      return;
+    }
+
     if (!hasPermissions) {
       return;
     }
@@ -1379,7 +1404,9 @@ function App() {
 
     if (selectedCar?.isReminderTest) {
       setTestReminderStatus(
-        "Test alarm armed. Lock the phone or switch apps now; it should fire in about 10 seconds."
+        myCarAlarmModule?.scheduleAlarm
+          ? "Native test alarm armed. Lock the phone or switch apps now; it should fire in about 10 seconds."
+          : "Expo test notification armed, but native alarm module is not available in this build."
       );
       return {
         immediateKinds: [kind],
