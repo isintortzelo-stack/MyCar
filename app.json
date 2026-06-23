@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "MyCar",
+    "slug": "mycar",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "plugins": [
+      "expo-notifications"
+    ],
+    "platforms": [
+      "android"
+    ],
+    "android": {
+      "package": "com.smoti.mycar",
+      "permissions": [
+        "POST_NOTIFICATIONS",
+        "SCHEDULE_EXACT_ALARM"
+      ]
+    },
+    "extra": {
+      "eas": {
+        "projectId": "d5f75603-f1e8-4416-9d05-00ca704b9860"
+      }
+    },
+    "owner": "eazy_g"
+  }
+}

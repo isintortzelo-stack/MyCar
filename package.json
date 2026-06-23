@@ -1,0 +1,32 @@
+{
+  "name": "mycar",
+  "version": "0.1.0",
+  "private": true,
+  "main": "expo/AppEntry",
+  "scripts": {
+    "start": "powershell -ExecutionPolicy Bypass -File scripts/start-expo-lan.ps1",
+    "start:dev": "powershell -ExecutionPolicy Bypass -File scripts/start-expo-lan.ps1 --dev-client",
+    "android": "powershell -ExecutionPolicy Bypass -File scripts/start-expo-lan.ps1 --android",
+    "android:dev": "expo run:android",
+    "web": "expo start --web",
+    "backend": "npm --prefix backend run dev"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "babel-preset-expo": "~54.0.10",
+    "expo": "~54.0.35",
+    "expo-dev-client": "~6.0.21",
+    "expo-device": "~8.0.10",
+    "expo-notifications": "~0.32.17",
+    "expo-status-bar": "~3.0.9",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-svg": "15.12.1"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@types/react": "~19.1.10",
+    "typescript": "~5.9.2"
+  }
+}
