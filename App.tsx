@@ -427,10 +427,14 @@ async function cancelCarNotifications(car: StoredCar) {
 }
 
 function scheduleNativeAlarm(alarm: ReminderAlarm, triggerAtMillis: number) {
-  myCarAlarmModule?.scheduleAlarm?.({
-    ...alarm,
-    triggerAtMillis
-  });
+  try {
+    myCarAlarmModule?.scheduleAlarm?.({
+      ...alarm,
+      triggerAtMillis
+    });
+  } catch {
+    // Native full-screen alarms are best-effort; Expo notifications still run.
+  }
 }
 
 async function scheduleCarNotifications(

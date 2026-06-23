@@ -178,6 +178,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.util.Log;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
@@ -186,6 +187,7 @@ import com.facebook.react.bridge.ReadableMap;
 public class MyCarAlarmModule extends ReactContextBaseJavaModule {
   private final ReactApplicationContext reactContext;
   private static final String[] KINDS = {"mot", "roadTax", "insurance"};
+  private static final String TAG = "MyCarAlarmModule";
 
   public MyCarAlarmModule(ReactApplicationContext reactContext) {
     super(reactContext);
@@ -199,56 +201,24 @@ public class MyCarAlarmModule extends ReactContextBaseJavaModule {
 
   @ReactMethod
   public void scheduleAlarm(ReadableMap alarm) {
-    String carId = alarm.getString("carId");
-    String kind = alarm.getString("kind");
-    int requestCode = getRequestCode(carId, kind);
-    long triggerAtMillis = Math.max(
-      (long) alarm.getDouble("triggerAtMillis"),
-      System.currentTimeMillis() + 1000
-    );
-
-    Intent intent = new Intent(reactContext, MyCarAlarmReceiver.class);
-    intent.putExtra("requestCode", requestCode);
-    intent.putExtra("carId", carId);
-    intent.putExtra("registrationNumber", alarm.getString("registrationNumber"));
-    intent.putExtra("kind", kind);
-    intent.putExtra("title", alarm.getString("title"));
-    intent.putExtra("body", alarm.getString("body"));
-    intent.putExtra("dueDate", alarm.getString("dueDate"));
-
-    PendingIntent pendingIntent = PendingIntent.getBroadcast(
-      reactContext,
-      requestCode,
-      intent,
-      PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-    );
-
-    AlarmManager alarmManager =
-      (AlarmManager) reactContext.getSystemService(Context.ALARM_SERVICE);
-    Intent showIntent = new Intent(reactContext, MyCarAlarmActivity.class);
-    showIntent.putExtras(intent);
-    PendingIntent showPendingIntent = PendingIntent.getActivity(
-      reactContext,
-      requestCode,
-      showIntent,
-      PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-    );
-
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-      alarmManager.setAlarmClock(
-        new AlarmManager.AlarmClockInfo(triggerAtMillis, showPendingIntent),
-        pendingIntent
-      );
-    } else {
-      alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent);
-    }
-  }
-
-  @ReactMethod
-  public void cancelCarAlarms(String carId) {
-    for (String kind : KINDS) {
+    try {
+      String carId = getRequiredString(alarm, "carId");
+      String kind = getRequiredString(alarm, "kind");
       int requestCode = getRequestCode(carId, kind);
+      long triggerAtMillis = Math.max(
+        (long) alarm.getDouble("triggerAtMillis"),
+        System.currentTimeMillis() + 1000
+      );
+
       Intent intent = new Intent(reactContext, MyCarAlarmReceiver.class);
+      intent.putExtra("requestCode", requestCode);
+      intent.putExtra("carId", carId);
+      intent.putExtra("registrationNumber", getRequiredString(alarm, "registrationNumber"));
+      intent.putExtra("kind", kind);
+      intent.putExtra("title", getRequiredString(alarm, "title"));
+      intent.putExtra("body", getRequiredString(alarm, "body"));
+      intent.putExtra("dueDate", getRequiredString(alarm, "dueDate"));
+
       PendingIntent pendingIntent = PendingIntent.getBroadcast(
         reactContext,
         requestCode,
@@ -258,9 +228,63 @@ public class MyCarAlarmModule extends ReactContextBaseJavaModule {
 
       AlarmManager alarmManager =
         (AlarmManager) reactContext.getSystemService(Context.ALARM_SERVICE);
-      alarmManager.cancel(pendingIntent);
-      pendingIntent.cancel();
+      if (alarmManager == null) {
+        return;
+      }
+
+      Intent showIntent = new Intent(reactContext, MyCarAlarmActivity.class);
+      showIntent.putExtras(intent);
+      PendingIntent showPendingIntent = PendingIntent.getActivity(
+        reactContext,
+        requestCode,
+        showIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+      );
+
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        alarmManager.setAlarmClock(
+          new AlarmManager.AlarmClockInfo(triggerAtMillis, showPendingIntent),
+          pendingIntent
+        );
+      } else {
+        alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent);
+      }
+    } catch (Exception exception) {
+      Log.w(TAG, "Unable to schedule full-screen alarm", exception);
     }
+  }
+
+  @ReactMethod
+  public void cancelCarAlarms(String carId) {
+    try {
+      for (String kind : KINDS) {
+        int requestCode = getRequestCode(carId, kind);
+        Intent intent = new Intent(reactContext, MyCarAlarmReceiver.class);
+        PendingIntent pendingIntent = PendingIntent.getBroadcast(
+          reactContext,
+          requestCode,
+          intent,
+          PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
+        AlarmManager alarmManager =
+          (AlarmManager) reactContext.getSystemService(Context.ALARM_SERVICE);
+        if (alarmManager != null) {
+          alarmManager.cancel(pendingIntent);
+        }
+        pendingIntent.cancel();
+      }
+    } catch (Exception exception) {
+      Log.w(TAG, "Unable to cancel full-screen alarms", exception);
+    }
+  }
+
+  static String getRequiredString(ReadableMap map, String key) {
+    if (!map.hasKey(key) || map.isNull(key)) {
+      return "";
+    }
+
+    return map.getString(key);
   }
 
   static int getRequestCode(String carId, String kind) {
@@ -284,55 +308,69 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.util.Log;
 
 public class MyCarAlarmReceiver extends BroadcastReceiver {
   static final String CHANNEL_ID = "mycar_full_screen_alarms";
+  private static final String TAG = "MyCarAlarmReceiver";
 
   @Override
   public void onReceive(Context context, Intent intent) {
-    createChannel(context);
+    try {
+      createChannel(context);
 
-    int requestCode = intent.getIntExtra("requestCode", 0);
-    Intent alarmIntent = new Intent(context, MyCarAlarmActivity.class);
-    alarmIntent.putExtras(intent);
-    alarmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+      int requestCode = intent.getIntExtra("requestCode", 0);
+      Intent alarmIntent = new Intent(context, MyCarAlarmActivity.class);
+      alarmIntent.putExtras(intent);
+      alarmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
 
-    PendingIntent fullScreenIntent = PendingIntent.getActivity(
-      context,
-      requestCode,
-      alarmIntent,
-      PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-    );
+      PendingIntent fullScreenIntent = PendingIntent.getActivity(
+        context,
+        requestCode,
+        alarmIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+      );
 
-    Notification.Builder builder =
-      Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-        ? new Notification.Builder(context, CHANNEL_ID)
-        : new Notification.Builder(context);
+      Notification.Builder builder =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+          ? new Notification.Builder(context, CHANNEL_ID)
+          : new Notification.Builder(context);
 
-    builder
-      .setSmallIcon(context.getApplicationInfo().icon)
-      .setContentTitle(intent.getStringExtra("title"))
-      .setContentText(intent.getStringExtra("body"))
-      .setCategory(Notification.CATEGORY_ALARM)
-      .setPriority(Notification.PRIORITY_MAX)
-      .setVisibility(Notification.VISIBILITY_PUBLIC)
-      .setFullScreenIntent(fullScreenIntent, true)
-      .setContentIntent(fullScreenIntent)
-      .setAutoCancel(true)
-      .setOngoing(false);
+      builder
+        .setSmallIcon(context.getApplicationInfo().icon)
+        .setContentTitle(intent.getStringExtra("title"))
+        .setContentText(intent.getStringExtra("body"))
+        .setCategory(Notification.CATEGORY_ALARM)
+        .setPriority(Notification.PRIORITY_MAX)
+        .setVisibility(Notification.VISIBILITY_PUBLIC)
+        .setFullScreenIntent(fullScreenIntent, true)
+        .setContentIntent(fullScreenIntent)
+        .setAutoCancel(true)
+        .setOngoing(false);
 
-    NotificationManager notificationManager =
-      (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-    notificationManager.notify(requestCode, builder.build());
+      NotificationManager notificationManager =
+        (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+      if (notificationManager != null) {
+        notificationManager.notify(requestCode, builder.build());
+      }
 
-    PowerManager powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-    PowerManager.WakeLock wakeLock = powerManager.newWakeLock(
-      PowerManager.PARTIAL_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP,
-      "MyCar:ReminderAlarm"
-    );
-    wakeLock.acquire(10000);
+      PowerManager powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+      if (powerManager != null) {
+        PowerManager.WakeLock wakeLock = powerManager.newWakeLock(
+          PowerManager.PARTIAL_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP,
+          "MyCar:ReminderAlarm"
+        );
+        wakeLock.acquire(10000);
+      }
 
-    context.startActivity(alarmIntent);
+      try {
+        context.startActivity(alarmIntent);
+      } catch (Exception exception) {
+        Log.w(TAG, "Unable to open full-screen alarm activity", exception);
+      }
+    } catch (Exception exception) {
+      Log.w(TAG, "Unable to show full-screen alarm", exception);
+    }
   }
 
   private void createChannel(Context context) {
