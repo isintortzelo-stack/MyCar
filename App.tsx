@@ -72,6 +72,7 @@ const STORAGE_KEYS = {
 const DVLA_API_URL =
   "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles";
 
+const RENDER_BACKEND_URL = "https://mycar-backend-du9w.onrender.com";
 const BACKEND_REQUEST_TIMEOUT_MS = 15000;
 const STALE_BACKEND_HOSTS = new Set(["10.47.151.239"]);
 const REMINDER_TEST_REGISTRATION = "TESTREM";
@@ -741,7 +742,11 @@ function getExpoLanBackendUrl() {
 function isStaleBackendUrl(value: string) {
   try {
     const parsed = new URL(value);
-    return STALE_BACKEND_HOSTS.has(parsed.hostname);
+    return (
+      parsed.protocol === "http:" ||
+      STALE_BACKEND_HOSTS.has(parsed.hostname) ||
+      /^\d{1,3}(\.\d{1,3}){3}$/.test(parsed.hostname)
+    );
   } catch {
     return false;
   }
@@ -766,12 +771,13 @@ function normalizeReminders(
 
 function App() {
   const autoBackendUrl = getExpoLanBackendUrl();
+  const defaultBackendUrl = RENDER_BACKEND_URL || autoBackendUrl;
   const [loading, setLoading] = useState(true);
   const [screen, setScreen] = useState<ScreenName>("garage");
   const [selectedCarId, setSelectedCarId] = useState<string | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [savedApiKey, setSavedApiKey] = useState("");
-  const [backendUrlInput, setBackendUrlInput] = useState(autoBackendUrl);
+  const [backendUrlInput, setBackendUrlInput] = useState(defaultBackendUrl);
   const [savedBackendUrl, setSavedBackendUrl] = useState("");
   const [dataSourceMode, setDataSourceMode] = useState<DataSourceMode>("backend");
   const [cars, setCars] = useState<StoredCar[]>([]);
@@ -854,13 +860,13 @@ function App() {
         setApiKeyInput(apiKey);
       }
 
-      if (backendUrl && !(autoBackendUrl && isStaleBackendUrl(backendUrl))) {
+      if (backendUrl && !isStaleBackendUrl(backendUrl)) {
         setSavedBackendUrl(backendUrl);
         setBackendUrlInput(backendUrl);
-      } else if (autoBackendUrl) {
-        await AsyncStorage.setItem(STORAGE_KEYS.backendUrl, autoBackendUrl);
-        setSavedBackendUrl(autoBackendUrl);
-        setBackendUrlInput(autoBackendUrl);
+      } else if (defaultBackendUrl) {
+        await AsyncStorage.setItem(STORAGE_KEYS.backendUrl, defaultBackendUrl);
+        setSavedBackendUrl(defaultBackendUrl);
+        setBackendUrlInput(defaultBackendUrl);
       }
 
       if (
@@ -945,7 +951,7 @@ function App() {
 
     if (
       (dataSourceMode === "dvla" && savedApiKey) ||
-      (dataSourceMode === "backend" && (savedBackendUrl || autoBackendUrl))
+      (dataSourceMode === "backend" && (savedBackendUrl || defaultBackendUrl))
     ) {
       await refreshCar(nextCar.id, nextCars);
     }
@@ -1013,7 +1019,7 @@ function App() {
   }
 
   async function refreshCar(id: string, baseCars = cars) {
-    const effectiveBackendUrl = savedBackendUrl || autoBackendUrl;
+    const effectiveBackendUrl = savedBackendUrl || defaultBackendUrl;
 
     if (dataSourceMode === "dvla" && !savedApiKey) {
       Alert.alert("Missing API key", "Save your DVLA API key before refreshing.");
@@ -1023,7 +1029,7 @@ function App() {
     if (dataSourceMode === "backend" && !effectiveBackendUrl) {
       Alert.alert(
         "Backend unavailable",
-        "Use Expo on LAN so the app can reach your laptop backend."
+        "The hosted backend URL is not configured."
       );
       return;
     }
