@@ -5,7 +5,8 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "plugins": [
-      "expo-notifications"
+      "expo-notifications",
+      "./plugins/withMyCarFullScreenAlarms"
     ],
     "platforms": [
       "android"
@@ -14,7 +15,10 @@
       "package": "com.smoti.mycar",
       "permissions": [
         "POST_NOTIFICATIONS",
-        "SCHEDULE_EXACT_ALARM"
+        "SCHEDULE_EXACT_ALARM",
+        "USE_FULL_SCREEN_INTENT",
+        "WAKE_LOCK",
+        "VIBRATE"
       ]
     },
     "extra": {

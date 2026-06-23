@@ -6,6 +6,7 @@ import {
   BackHandler,
   Easing,
   Modal,
+  NativeModules,
   Platform,
   Pressable,
   ScrollView,
@@ -13,6 +14,7 @@ import {
   Switch,
   Text,
   TextInput,
+  Vibration,
   View
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
@@ -53,6 +55,14 @@ type DvlaVehicle = {
 
 type ReminderOffsetDays = 1 | 7 | 30;
 type ReminderKind = "mot" | "roadTax" | "insurance";
+type ReminderAlarm = {
+  carId: string;
+  registrationNumber: string;
+  kind: ReminderKind;
+  title: string;
+  body: string;
+  dueDate: string;
+};
 
 type CarReminders = {
   motEnabled: boolean;
@@ -89,7 +99,21 @@ const DEFAULT_REMINDERS: CarReminders = {
 
 type ScheduleCarNotificationOptions = {
   immediateKinds?: ReminderKind[];
+  onImmediateAlarm?: (alarm: ReminderAlarm) => void;
 };
+
+type NativeAlarmPayload = ReminderAlarm & {
+  triggerAtMillis: number;
+};
+
+type MyCarAlarmModule = {
+  scheduleAlarm?: (alarm: NativeAlarmPayload) => void;
+  cancelCarAlarms?: (carId: string) => void;
+};
+
+const myCarAlarmModule = NativeModules.MyCarAlarmModule as
+  | MyCarAlarmModule
+  | undefined;
 
 const NOTIFICATIONS_SUPPORTED = true;
 
@@ -100,7 +124,8 @@ if (NOTIFICATIONS_SUPPORTED) {
       shouldPlaySound: true,
       shouldSetBadge: false,
       shouldShowBanner: true,
-      shouldShowList: true
+      shouldShowList: true,
+      priority: Notifications.AndroidNotificationPriority.MAX
     })
   });
 }
@@ -324,6 +349,36 @@ function getWholeDaysUntil(eventDate: Date) {
   );
 }
 
+function isReminderKind(value: unknown): value is ReminderKind {
+  return value === "mot" || value === "roadTax" || value === "insurance";
+}
+
+function getAlarmFromNotification(
+  notification: Notifications.Notification
+): ReminderAlarm | null {
+  const data = notification.request.content.data;
+
+  if (
+    typeof data.carId !== "string" ||
+    typeof data.registrationNumber !== "string" ||
+    !isReminderKind(data.kind) ||
+    typeof data.title !== "string" ||
+    typeof data.body !== "string" ||
+    typeof data.dueDate !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    carId: data.carId,
+    registrationNumber: data.registrationNumber,
+    kind: data.kind,
+    title: data.title,
+    body: data.body,
+    dueDate: data.dueDate
+  };
+}
+
 async function registerForNotifications() {
   if (!NOTIFICATIONS_SUPPORTED) {
     return false;
@@ -333,9 +388,11 @@ async function registerForNotifications() {
     if (Platform.OS === "android") {
       await Notifications.setNotificationChannelAsync("reminders", {
         name: "Reminders",
-        importance: Notifications.AndroidImportance.HIGH,
+        importance: Notifications.AndroidImportance.MAX,
         sound: "default",
-        vibrationPattern: [0, 250, 250, 250]
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        enableVibrate: true,
+        vibrationPattern: [0, 800, 350, 800]
       });
     }
 
@@ -360,11 +417,20 @@ async function cancelCarNotifications(car: StoredCar) {
     return;
   }
 
+  myCarAlarmModule?.cancelCarAlarms?.(car.id);
+
   await Promise.all(
     (car.notificationIds || []).map((notificationId) =>
       Notifications.cancelScheduledNotificationAsync(notificationId)
     )
   );
+}
+
+function scheduleNativeAlarm(alarm: ReminderAlarm, triggerAtMillis: number) {
+  myCarAlarmModule?.scheduleAlarm?.({
+    ...alarm,
+    triggerAtMillis
+  });
 }
 
 async function scheduleCarNotifications(
@@ -395,6 +461,14 @@ async function scheduleCarNotifications(
     const body = `${formatDueMessage(label, eventDate)} ${formatDate(
       eventDate.toISOString()
     )}`;
+    const alarm: ReminderAlarm = {
+      carId: car.id,
+      registrationNumber: car.registrationNumber,
+      kind,
+      title,
+      body,
+      dueDate: eventDate.toISOString()
+    };
     const triggerDate = subtractDays(eventDate, offsetDays);
     if (!hasPermissions) {
       return;
@@ -409,7 +483,9 @@ async function scheduleCarNotifications(
         content: {
           title,
           body,
-          sound: "default"
+          sound: "default",
+          priority: Notifications.AndroidNotificationPriority.MAX,
+          data: alarm
         },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
@@ -417,14 +493,20 @@ async function scheduleCarNotifications(
           channelId: "reminders"
         }
       });
+      scheduleNativeAlarm(alarm, Date.now() + 1000);
+      options.onImmediateAlarm?.(alarm);
       return;
     }
+
+    scheduleNativeAlarm(alarm, triggerDate.getTime());
 
     const notificationId = await Notifications.scheduleNotificationAsync({
       content: {
         title,
         body,
-        sound: "default"
+        sound: "default",
+        priority: Notifications.AndroidNotificationPriority.MAX,
+        data: alarm
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
@@ -809,10 +891,62 @@ function App() {
   const [testInsuranceInput, setTestInsuranceInput] = useState("");
   const [testReminderStatus, setTestReminderStatus] = useState("");
   const [editModalVisible, setEditModalVisible] = useState(false);
+  const [activeAlarm, setActiveAlarm] = useState<ReminderAlarm | null>(null);
   const selectedCar = cars.find((car) => car.id === selectedCarId) || null;
 
   useEffect(() => {
     void loadStoredState();
+  }, []);
+
+  useEffect(() => {
+    if (!activeAlarm) {
+      Vibration.cancel();
+      return;
+    }
+
+    Vibration.vibrate([0, 800, 350, 800], false);
+
+    return () => Vibration.cancel();
+  }, [activeAlarm]);
+
+  useEffect(() => {
+    function showReminderAlarm(alarm: ReminderAlarm) {
+      setActiveAlarm(alarm);
+      setSelectedCarId(alarm.carId);
+      setScreen("carDetails");
+    }
+
+    const receivedSubscription =
+      Notifications.addNotificationReceivedListener((notification) => {
+        const alarm = getAlarmFromNotification(notification);
+        if (alarm) {
+          showReminderAlarm(alarm);
+        }
+      });
+
+    const responseSubscription =
+      Notifications.addNotificationResponseReceivedListener((response) => {
+        const alarm = getAlarmFromNotification(response.notification);
+        if (alarm) {
+          showReminderAlarm(alarm);
+        }
+      });
+
+    void Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (!response) {
+        return;
+      }
+
+      const alarm = getAlarmFromNotification(response.notification);
+      if (alarm) {
+        showReminderAlarm(alarm);
+      }
+    });
+
+    return () => {
+      receivedSubscription.remove();
+      responseSubscription.remove();
+    };
   }, []);
 
   useEffect(() => {
@@ -825,6 +959,11 @@ function App() {
     const subscription = BackHandler.addEventListener(
       "hardwareBackPress",
       () => {
+        if (activeAlarm) {
+          setActiveAlarm(null);
+          return true;
+        }
+
         if (editModalVisible) {
           setEditModalVisible(false);
           return true;
@@ -840,7 +979,7 @@ function App() {
     );
 
     return () => subscription.remove();
-  }, [editModalVisible, screen]);
+  }, [activeAlarm, editModalVisible, screen]);
 
   useEffect(() => {
     refreshSpinValue.setValue(0);
@@ -1111,7 +1250,14 @@ function App() {
     const updatedCar = updater(existingCar);
     const notificationIds = await scheduleCarNotifications(
       updatedCar,
-      notificationOptions
+      {
+        ...notificationOptions,
+        onImmediateAlarm: (alarm) => {
+          setActiveAlarm(alarm);
+          setSelectedCarId(alarm.carId);
+          setScreen("carDetails");
+        }
+      }
     );
     const nextCars = cars.map((car) =>
       car.id === id
@@ -1636,6 +1782,32 @@ function App() {
             </Modal>
           </ScrollView>
         ) : null}
+
+        <Modal
+          animationType="fade"
+          transparent
+          visible={Boolean(activeAlarm)}
+          onRequestClose={() => setActiveAlarm(null)}
+        >
+          <View style={styles.alarmOverlay}>
+            <View style={styles.alarmCard}>
+              <Text style={styles.alarmEyebrow}>Reminder Alarm</Text>
+              <Text style={styles.alarmTitle}>
+                {activeAlarm?.registrationNumber}
+              </Text>
+              <Text style={styles.alarmMessage}>{activeAlarm?.body}</Text>
+              <Text style={styles.alarmDate}>
+                Due date: {formatDate(activeAlarm?.dueDate)}
+              </Text>
+              <Pressable
+                style={styles.alarmDismissButton}
+                onPress={() => setActiveAlarm(null)}
+              >
+                <Text style={styles.alarmDismissButtonText}>Dismiss</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -1956,6 +2128,64 @@ const styles = StyleSheet.create({
     gap: 14,
     borderWidth: 1,
     borderColor: "#1f2937"
+  },
+  alarmOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(5,10,20,0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20
+  },
+  alarmCard: {
+    width: "100%",
+    maxWidth: 390,
+    backgroundColor: "#f8fafc",
+    borderRadius: 20,
+    padding: 22,
+    gap: 14,
+    borderWidth: 2,
+    borderColor: "#f59e0b"
+  },
+  alarmEyebrow: {
+    color: "#b45309",
+    fontSize: 12,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    letterSpacing: 1
+  },
+  alarmTitle: {
+    color: "#111827",
+    backgroundColor: "#facc15",
+    alignSelf: "flex-start",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    fontSize: 28,
+    fontWeight: "900",
+    letterSpacing: 1
+  },
+  alarmMessage: {
+    color: "#111827",
+    fontSize: 20,
+    fontWeight: "800",
+    lineHeight: 28
+  },
+  alarmDate: {
+    color: "#475569",
+    fontSize: 14,
+    fontWeight: "700"
+  },
+  alarmDismissButton: {
+    backgroundColor: "#111827",
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: "center",
+    marginTop: 4
+  },
+  alarmDismissButtonText: {
+    color: "#f8fafc",
+    fontSize: 16,
+    fontWeight: "900"
   }
 });
 
