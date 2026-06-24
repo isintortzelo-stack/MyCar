@@ -5,6 +5,7 @@ import {
   Animated,
   BackHandler,
   Easing,
+  Image,
   Modal,
   Platform,
   Pressable,
@@ -287,6 +288,18 @@ function formatReminderLabel(days: ReminderOffsetDays) {
   return `${days} days before`;
 }
 
+function getReminderScheduleDays(days: ReminderOffsetDays) {
+  if (days === 30) {
+    return [30, 21, 14, 7, 1];
+  }
+
+  if (days === 7) {
+    return [7, 1];
+  }
+
+  return [1];
+}
+
 function formatDueMessage(label: string, eventDate: Date) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -323,6 +336,90 @@ function getWholeDaysUntil(eventDate: Date) {
   return Math.ceil(
     (dueDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000)
   );
+}
+
+function isDateInReminderRange(
+  value: string | undefined,
+  enabled: boolean,
+  offsetDays: ReminderOffsetDays
+) {
+  if (!enabled || !value) {
+    return false;
+  }
+
+  const date = parseManualDate(value) || new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return false;
+  }
+
+  return getWholeDaysUntil(date) <= offsetDays;
+}
+
+function isExpiredDate(value: string | undefined) {
+  if (!value) {
+    return false;
+  }
+
+  const date = parseManualDate(value) || new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return false;
+  }
+
+  return getWholeDaysUntil(date) < 0;
+}
+
+function formatMotDate(car: StoredCar) {
+  return isExpiredDate(car.dvla?.motExpiryDate)
+    ? "Expired"
+    : formatDate(car.dvla?.motExpiryDate);
+}
+
+function formatRoadTaxDate(car: StoredCar) {
+  return isExpiredDate(car.dvla?.taxDueDate)
+    ? "Expired"
+    : formatDate(car.dvla?.taxDueDate);
+}
+
+function getMotDateStyle(car: StoredCar) {
+  if (isExpiredDate(car.dvla?.motExpiryDate)) {
+    return styles.expiredValue;
+  }
+
+  return isDateInReminderRange(
+    car.dvla?.motExpiryDate,
+    car.reminders.motEnabled,
+    car.reminders.motOffsetDays
+  )
+    ? styles.reminderDueValue
+    : undefined;
+}
+
+function getRoadTaxDateStyle(car: StoredCar) {
+  if (isExpiredDate(car.dvla?.taxDueDate)) {
+    return styles.expiredValue;
+  }
+
+  return isDateInReminderRange(
+    car.dvla?.taxDueDate,
+    car.reminders.roadTaxEnabled,
+    car.reminders.roadTaxOffsetDays
+  )
+    ? styles.reminderDueValue
+    : undefined;
+}
+
+function getInsuranceDateStyle(car: StoredCar) {
+  if (!car.insuranceExpiry) {
+    return styles.notSetValue;
+  }
+
+  return isDateInReminderRange(
+    car.insuranceExpiry,
+    car.reminders.insuranceEnabled,
+    car.reminders.insuranceOffsetDays
+  )
+    ? styles.reminderDueValue
+    : undefined;
 }
 
 async function registerForNotifications() {
@@ -395,19 +492,17 @@ async function scheduleCarNotifications(
       return;
     }
 
-    const body = `${formatDueMessage(label, eventDate)} ${formatDate(
-      eventDate.toISOString()
-    )}`;
-    const triggerDate = subtractDays(eventDate, offsetDays);
     if (!hasPermissions) {
       return;
     }
 
-    if (getWholeDaysUntil(eventDate) <= offsetDays) {
-      if (!immediateKinds.has(kind)) {
-        return;
-      }
+    const daysUntil = getWholeDaysUntil(eventDate);
+    const scheduleDays = getReminderScheduleDays(offsetDays);
 
+    if (daysUntil <= offsetDays && immediateKinds.has(kind)) {
+      const body = `${formatDueMessage(label, eventDate)} ${formatDate(
+        eventDate.toISOString()
+      )}`;
       await Notifications.scheduleNotificationAsync({
         content: {
           title,
@@ -421,24 +516,33 @@ async function scheduleCarNotifications(
           channelId: "reminders"
         }
       });
-      return;
     }
 
-    const notificationId = await Notifications.scheduleNotificationAsync({
-      content: {
-        title,
-        body,
-        sound: "default",
-        priority: Notifications.AndroidNotificationPriority.MAX
-      },
-      trigger: {
-        type: Notifications.SchedulableTriggerInputTypes.DATE,
-        channelId: "reminders",
-        date: triggerDate
+    for (const scheduleDay of scheduleDays) {
+      const triggerDate = subtractDays(eventDate, scheduleDay);
+      if (triggerDate.getTime() <= Date.now()) {
+        continue;
       }
-    });
 
-    notificationIds.push(notificationId);
+      const body = `${label} is due in ${scheduleDay} ${
+        scheduleDay === 1 ? "day" : "days"
+      }. ${formatDate(eventDate.toISOString())}`;
+      const notificationId = await Notifications.scheduleNotificationAsync({
+        content: {
+          title,
+          body,
+          sound: "default",
+          priority: Notifications.AndroidNotificationPriority.MAX
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.DATE,
+          channelId: "reminders",
+          date: triggerDate
+        }
+      });
+
+      notificationIds.push(notificationId);
+    }
   }
 
   if (car.reminders.motEnabled) {
@@ -1259,13 +1363,13 @@ function App() {
           ) : (
             <View style={styles.backButtonSpacer} />
           )}
-          <Text style={styles.topBarTitle}>
-            {screen === "garage"
-              ? "MyCar"
-              : screen === "addCar"
-                ? "Add Car"
-                : "Car Details"}
-          </Text>
+          <View style={styles.topBarBrand}>
+            <Image
+              source={require("./assets/mycar-header-icon.png")}
+              resizeMode="contain"
+              style={styles.topBarIcon}
+            />
+          </View>
           <View style={styles.backButtonSpacer} />
         </View>
 
@@ -1334,11 +1438,13 @@ function App() {
                         <DetailRow label="Vehicle" value={getDisplayVehicleName(car)} />
                         <DetailRow
                           label="MOT"
-                          value={formatDate(car.dvla?.motExpiryDate)}
+                          value={formatMotDate(car)}
+                          valueStyle={getMotDateStyle(car)}
                         />
                         <DetailRow
                           label="Road Tax"
-                          value={formatDate(car.dvla?.taxDueDate)}
+                          value={formatRoadTaxDate(car)}
+                          valueStyle={getRoadTaxDateStyle(car)}
                         />
                         <DetailRow
                           label="Insurance"
@@ -1347,9 +1453,7 @@ function App() {
                               ? formatDate(car.insuranceExpiry)
                               : "Not set"
                           }
-                          valueStyle={
-                            car.insuranceExpiry ? undefined : styles.notSetValue
-                          }
+                          valueStyle={getInsuranceDateStyle(car)}
                         />
                       </View>
 
@@ -1430,11 +1534,13 @@ function App() {
                 />
                 <DetailRow
                   label="MOT"
-                  value={formatDate(selectedCar.dvla?.motExpiryDate)}
+                  value={formatMotDate(selectedCar)}
+                  valueStyle={getMotDateStyle(selectedCar)}
                 />
                 <DetailRow
                   label="Road Tax"
-                  value={formatDate(selectedCar.dvla?.taxDueDate)}
+                  value={formatRoadTaxDate(selectedCar)}
+                  valueStyle={getRoadTaxDateStyle(selectedCar)}
                 />
                 <DetailRow
                   label="Insurance"
@@ -1443,9 +1549,7 @@ function App() {
                       ? formatDate(selectedCar.insuranceExpiry)
                       : "Not set"
                   }
-                  valueStyle={
-                    selectedCar.insuranceExpiry ? undefined : styles.notSetValue
-                  }
+                  valueStyle={getInsuranceDateStyle(selectedCar)}
                 />
                 <DetailRow label="Fuel" value={selectedCar.dvla?.fuelType || "Unknown"} />
                 <DetailRow label="Colour" value={selectedCar.dvla?.colour || "Unknown"} />
@@ -1684,6 +1788,17 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700"
   },
+  topBarBrand: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8
+  },
+  topBarIcon: {
+    width: 150,
+    height: 60,
+    borderRadius: 10
+  },
   backButton: {
     minWidth: 56
   },
@@ -1870,6 +1985,12 @@ const styles = StyleSheet.create({
   },
   notSetValue: {
     color: "#ef4444"
+  },
+  expiredValue: {
+    color: "#ef4444"
+  },
+  reminderDueValue: {
+    color: "#f59e0b"
   },
   updatedText: {
     color: "#64748b",
