@@ -377,6 +377,7 @@ public class MyCarAlarmModule extends ReactContextBaseJavaModule {
 
 const alarmReceiver = `package ${ALARM_PACKAGE};
 
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -394,6 +395,9 @@ import android.util.Log;
 
 public class MyCarAlarmReceiver extends BroadcastReceiver {
   static final String CHANNEL_ID = "mycar_full_screen_alarms";
+  static final String ACTION_DISMISS = "com.smoti.mycar.alarm.DISMISS";
+  static final String ACTION_SNOOZE = "com.smoti.mycar.alarm.SNOOZE";
+  static final int SNOOZE_MINUTES = 5;
   private static final String TAG = "MyCarAlarmReceiver";
 
   @Override
@@ -402,6 +406,18 @@ public class MyCarAlarmReceiver extends BroadcastReceiver {
       createChannel(context);
 
       int requestCode = intent.getIntExtra("requestCode", 0);
+      String action = intent.getAction();
+      if (ACTION_DISMISS.equals(action)) {
+        dismissAlarm(context, requestCode);
+        return;
+      }
+
+      if (ACTION_SNOOZE.equals(action)) {
+        dismissAlarm(context, requestCode);
+        scheduleSnooze(context, intent, requestCode);
+        return;
+      }
+
       Intent alarmIntent = new Intent(context, MyCarAlarmActivity.class);
       alarmIntent.putExtras(intent);
       alarmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -410,6 +426,26 @@ public class MyCarAlarmReceiver extends BroadcastReceiver {
         context,
         requestCode,
         alarmIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+      );
+
+      Intent dismissIntent = new Intent(context, MyCarAlarmReceiver.class);
+      dismissIntent.setAction(ACTION_DISMISS);
+      dismissIntent.putExtras(intent);
+      PendingIntent dismissPendingIntent = PendingIntent.getBroadcast(
+        context,
+        requestCode + 1,
+        dismissIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+      );
+
+      Intent snoozeIntent = new Intent(context, MyCarAlarmReceiver.class);
+      snoozeIntent.setAction(ACTION_SNOOZE);
+      snoozeIntent.putExtras(intent);
+      PendingIntent snoozePendingIntent = PendingIntent.getBroadcast(
+        context,
+        requestCode + 2,
+        snoozeIntent,
         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
       );
 
@@ -427,8 +463,10 @@ public class MyCarAlarmReceiver extends BroadcastReceiver {
         .setVisibility(Notification.VISIBILITY_PUBLIC)
         .setFullScreenIntent(fullScreenIntent, true)
         .setContentIntent(fullScreenIntent)
-        .setAutoCancel(true)
-        .setOngoing(false);
+        .addAction(0, "Snooze 5 min", snoozePendingIntent)
+        .addAction(0, "Dismiss", dismissPendingIntent)
+        .setAutoCancel(false)
+        .setOngoing(true);
 
       NotificationManager notificationManager =
         (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
@@ -452,6 +490,56 @@ public class MyCarAlarmReceiver extends BroadcastReceiver {
       }
     } catch (Exception exception) {
       Log.w(TAG, "Unable to show full-screen alarm", exception);
+    }
+  }
+
+  private void dismissAlarm(Context context, int requestCode) {
+    NotificationManager notificationManager =
+      (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+    if (notificationManager != null) {
+      notificationManager.cancel(requestCode);
+    }
+  }
+
+  private void scheduleSnooze(Context context, Intent originalIntent, int requestCode) {
+    try {
+      Intent snoozedIntent = new Intent(context, MyCarAlarmReceiver.class);
+      snoozedIntent.putExtras(originalIntent);
+      snoozedIntent.setAction(null);
+      PendingIntent pendingIntent = PendingIntent.getBroadcast(
+        context,
+        requestCode,
+        snoozedIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+      );
+
+      Intent showIntent = new Intent(context, MyCarAlarmActivity.class);
+      showIntent.putExtras(originalIntent);
+      PendingIntent showPendingIntent = PendingIntent.getActivity(
+        context,
+        requestCode,
+        showIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+      );
+
+      AlarmManager alarmManager =
+        (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+      if (alarmManager == null) {
+        return;
+      }
+
+      long triggerAtMillis =
+        System.currentTimeMillis() + SNOOZE_MINUTES * 60 * 1000;
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        alarmManager.setAlarmClock(
+          new AlarmManager.AlarmClockInfo(triggerAtMillis, showPendingIntent),
+          pendingIntent
+        );
+      } else {
+        alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent);
+      }
+    } catch (Exception exception) {
+      Log.w(TAG, "Unable to snooze alarm", exception);
     }
   }
 
@@ -495,6 +583,7 @@ const alarmActivity = `package ${ALARM_PACKAGE};
 import android.app.Activity;
 import android.app.NotificationManager;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
@@ -574,10 +663,28 @@ public class MyCarAlarmActivity extends Activity {
     dismiss.setOnClickListener((view) -> {
       NotificationManager notificationManager =
         (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-      notificationManager.cancel(requestCode);
+      if (notificationManager != null) {
+        notificationManager.cancel(requestCode);
+      }
       finishAndRemoveTask();
     });
-    root.addView(dismiss);
+
+    Button snooze = new Button(this);
+    snooze.setText("Snooze 5 min");
+    snooze.setOnClickListener((view) -> {
+      Intent snoozeIntent = new Intent(this, MyCarAlarmReceiver.class);
+      snoozeIntent.setAction(MyCarAlarmReceiver.ACTION_SNOOZE);
+      snoozeIntent.putExtras(getIntent());
+      sendBroadcast(snoozeIntent);
+      finishAndRemoveTask();
+    });
+
+    LinearLayout actions = new LinearLayout(this);
+    actions.setOrientation(LinearLayout.HORIZONTAL);
+    actions.setGravity(Gravity.CENTER);
+    actions.addView(snooze);
+    actions.addView(dismiss);
+    root.addView(actions);
 
     setContentView(root);
   }
