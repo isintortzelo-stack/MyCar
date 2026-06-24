@@ -174,15 +174,19 @@ public class MyCarAlarmPackage implements ReactPackage {
 const alarmModule = `package ${ALARM_PACKAGE};
 
 import android.app.AlarmManager;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
+import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReadableMap;
+import com.facebook.react.bridge.WritableNativeMap;
 
 public class MyCarAlarmModule extends ReactContextBaseJavaModule {
   private final ReactApplicationContext reactContext;
@@ -197,6 +201,84 @@ public class MyCarAlarmModule extends ReactContextBaseJavaModule {
   @Override
   public String getName() {
     return "MyCarAlarmModule";
+  }
+
+  @ReactMethod
+  public void getAlarmPermissions(Promise promise) {
+    try {
+      WritableNativeMap result = new WritableNativeMap();
+      AlarmManager alarmManager =
+        (AlarmManager) reactContext.getSystemService(Context.ALARM_SERVICE);
+      NotificationManager notificationManager =
+        (NotificationManager) reactContext.getSystemService(Context.NOTIFICATION_SERVICE);
+
+      boolean canScheduleExactAlarms = true;
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && alarmManager != null) {
+        canScheduleExactAlarms = alarmManager.canScheduleExactAlarms();
+      }
+
+      boolean canUseFullScreenIntent = true;
+      if (
+        Build.VERSION.SDK_INT >= 34 &&
+        notificationManager != null
+      ) {
+        canUseFullScreenIntent = notificationManager.canUseFullScreenIntent();
+      }
+
+      result.putBoolean("nativeModuleAvailable", true);
+      result.putBoolean("canScheduleExactAlarms", canScheduleExactAlarms);
+      result.putBoolean("canUseFullScreenIntent", canUseFullScreenIntent);
+      promise.resolve(result);
+    } catch (Exception exception) {
+      promise.reject("alarm_permissions_error", "Unable to read alarm permissions", exception);
+    }
+  }
+
+  @ReactMethod
+  public void openExactAlarmSettings() {
+    try {
+      Intent intent;
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        intent = new Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+        intent.setData(Uri.parse("package:" + reactContext.getPackageName()));
+      } else {
+        intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        intent.setData(Uri.parse("package:" + reactContext.getPackageName()));
+      }
+      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+      reactContext.startActivity(intent);
+    } catch (Exception exception) {
+      openAppSettings();
+    }
+  }
+
+  @ReactMethod
+  public void openFullScreenAlarmSettings() {
+    try {
+      Intent intent;
+      if (Build.VERSION.SDK_INT >= 34) {
+        intent = new Intent("android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT");
+        intent.setData(Uri.parse("package:" + reactContext.getPackageName()));
+      } else {
+        intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        intent.setData(Uri.parse("package:" + reactContext.getPackageName()));
+      }
+      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+      reactContext.startActivity(intent);
+    } catch (Exception exception) {
+      openAppSettings();
+    }
+  }
+
+  private void openAppSettings() {
+    try {
+      Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+      intent.setData(Uri.parse("package:" + reactContext.getPackageName()));
+      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+      reactContext.startActivity(intent);
+    } catch (Exception exception) {
+      Log.w(TAG, "Unable to open app settings", exception);
+    }
   }
 
   @ReactMethod

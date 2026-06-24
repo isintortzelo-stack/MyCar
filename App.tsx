@@ -110,11 +110,20 @@ type NativeAlarmPayload = ReminderAlarm & {
 type MyCarAlarmModule = {
   scheduleAlarm?: (alarm: NativeAlarmPayload) => void;
   cancelCarAlarms?: (carId: string) => void;
+  getAlarmPermissions?: () => Promise<AlarmPermissionStatus>;
+  openExactAlarmSettings?: () => void;
+  openFullScreenAlarmSettings?: () => void;
 };
 
 const myCarAlarmModule = NativeModules.MyCarAlarmModule as
   | MyCarAlarmModule
   | undefined;
+
+type AlarmPermissionStatus = {
+  nativeModuleAvailable: boolean;
+  canScheduleExactAlarms: boolean;
+  canUseFullScreenIntent: boolean;
+};
 
 const NOTIFICATIONS_SUPPORTED = true;
 
@@ -923,6 +932,8 @@ function App() {
   const [testRoadTaxInput, setTestRoadTaxInput] = useState("");
   const [testInsuranceInput, setTestInsuranceInput] = useState("");
   const [testReminderStatus, setTestReminderStatus] = useState("");
+  const [alarmPermissionStatus, setAlarmPermissionStatus] =
+    useState<AlarmPermissionStatus | null>(null);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [activeAlarm, setActiveAlarm] = useState<ReminderAlarm | null>(null);
   const selectedCar = cars.find((car) => car.id === selectedCarId) || null;
@@ -1312,6 +1323,7 @@ function App() {
     setTestRoadTaxInput(car?.dvla?.taxDueDate || "");
     setTestInsuranceInput(car?.insuranceExpiry || "");
     setTestReminderStatus("");
+    setAlarmPermissionStatus(null);
     setScreen("carDetails");
   }
 
@@ -1320,6 +1332,7 @@ function App() {
     setNicknameInput("");
     setInsuranceExpiryInput("");
     setTestReminderStatus("");
+    setAlarmPermissionStatus(null);
     setScreen("addCar");
   }
 
@@ -1392,6 +1405,51 @@ function App() {
     setTestInsuranceInput(insuranceExpiry);
     setTestReminderStatus("Test dates saved. Reminder notifications updated.");
 
+  }
+
+  async function checkNativeAlarmPermissions() {
+    if (!myCarAlarmModule?.getAlarmPermissions) {
+      setAlarmPermissionStatus(null);
+      setTestReminderStatus(
+        "Native alarm module is not available in this installed build."
+      );
+      return;
+    }
+
+    try {
+      const status = await myCarAlarmModule.getAlarmPermissions();
+      setAlarmPermissionStatus(status);
+      setTestReminderStatus(
+        status.canScheduleExactAlarms && status.canUseFullScreenIntent
+          ? "Native alarm permissions look enabled."
+          : "Android is blocking one or more alarm permissions. Open the settings below."
+      );
+    } catch {
+      setAlarmPermissionStatus(null);
+      setTestReminderStatus("Could not check native alarm permissions.");
+    }
+  }
+
+  function openExactAlarmSettings() {
+    if (!myCarAlarmModule?.openExactAlarmSettings) {
+      setTestReminderStatus(
+        "Native alarm module is not available in this installed build."
+      );
+      return;
+    }
+
+    myCarAlarmModule.openExactAlarmSettings();
+  }
+
+  function openFullScreenAlarmSettings() {
+    if (!myCarAlarmModule?.openFullScreenAlarmSettings) {
+      setTestReminderStatus(
+        "Native alarm module is not available in this installed build."
+      );
+      return;
+    }
+
+    myCarAlarmModule.openFullScreenAlarmSettings();
   }
 
   function getReminderToggleOptions(
@@ -1664,6 +1722,56 @@ function App() {
                 >
                   <Text style={styles.primaryButtonText}>Save test dates</Text>
                 </Pressable>
+                <View style={styles.alarmSettingsPanel}>
+                  <Pressable
+                    style={styles.alarmSettingsButton}
+                    onPress={() => void checkNativeAlarmPermissions()}
+                  >
+                    <Text style={styles.alarmSettingsButtonText}>
+                      Check alarm permissions
+                    </Text>
+                  </Pressable>
+                  {alarmPermissionStatus ? (
+                    <View style={styles.alarmPermissionRows}>
+                      <Text style={styles.helperText}>
+                        Native module:{" "}
+                        {alarmPermissionStatus.nativeModuleAvailable
+                          ? "Available"
+                          : "Missing"}
+                      </Text>
+                      <Text style={styles.helperText}>
+                        Exact alarms:{" "}
+                        {alarmPermissionStatus.canScheduleExactAlarms
+                          ? "Allowed"
+                          : "Blocked"}
+                      </Text>
+                      <Text style={styles.helperText}>
+                        Full-screen alarms:{" "}
+                        {alarmPermissionStatus.canUseFullScreenIntent
+                          ? "Allowed"
+                          : "Blocked"}
+                      </Text>
+                    </View>
+                  ) : null}
+                  <View style={styles.alarmSettingsActions}>
+                    <Pressable
+                      style={styles.alarmSettingsButton}
+                      onPress={openExactAlarmSettings}
+                    >
+                      <Text style={styles.alarmSettingsButtonText}>
+                        Exact alarm settings
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.alarmSettingsButton}
+                      onPress={openFullScreenAlarmSettings}
+                    >
+                      <Text style={styles.alarmSettingsButtonText}>
+                        Full-screen settings
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
                 {testReminderStatus ? (
                   <Text style={styles.helperText}>{testReminderStatus}</Text>
                 ) : null}
@@ -2089,6 +2197,35 @@ const styles = StyleSheet.create({
   helperText: {
     color: "#94a3b8",
     fontSize: 13
+  },
+  alarmSettingsPanel: {
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#1e293b",
+    paddingTop: 12
+  },
+  alarmPermissionRows: {
+    gap: 4
+  },
+  alarmSettingsActions: {
+    flexDirection: "row",
+    gap: 8
+  },
+  alarmSettingsButton: {
+    flex: 1,
+    backgroundColor: "#0f172a",
+    borderColor: "#334155",
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    alignItems: "center"
+  },
+  alarmSettingsButtonText: {
+    color: "#f8fafc",
+    fontSize: 12,
+    fontWeight: "800",
+    textAlign: "center"
   },
   toggleRow: {
     flexDirection: "row",
