@@ -1369,6 +1369,7 @@ function App() {
               resizeMode="contain"
               style={styles.topBarIcon}
             />
+            <Text style={styles.topBarTitle}>MyCar</Text>
           </View>
           <View style={styles.backButtonSpacer} />
         </View>
@@ -1786,18 +1787,23 @@ const styles = StyleSheet.create({
   topBarTitle: {
     color: "#f59e0b",
     fontSize: 18,
-    fontWeight: "700"
+    fontWeight: "700",
+    textAlign: "center"
   },
   topBarBrand: {
-    flexDirection: "row",
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 8
+    position: "relative",
+    minHeight: 28
   },
   topBarIcon: {
-    width: 150,
-    height: 60,
-    borderRadius: 10
+    width: 36,
+    height: 20,
+    borderRadius: 3,
+    left: "50%",
+    marginLeft: -68,
+    position: "absolute"
   },
   backButton: {
     minWidth: 56

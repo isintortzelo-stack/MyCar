@@ -4,7 +4,7 @@
     "slug": "mycar",
     "version": "0.1.0",
     "orientation": "portrait",
-    "icon": "./assets/Icon 1.png",
+    "icon": "./assets/icon2.png",
     "plugins": [
       [
         "expo-notifications",
@@ -20,7 +20,7 @@
     "android": {
       "package": "com.smoti.mycar",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/Icon 1.png",
+        "foregroundImage": "./assets/icon2.png",
         "backgroundColor": "#0b1220"
       },
       "permissions": [
