@@ -6,7 +6,6 @@ import {
   BackHandler,
   Easing,
   Modal,
-  NativeModules,
   Platform,
   Pressable,
   ScrollView,
@@ -14,7 +13,6 @@ import {
   Switch,
   Text,
   TextInput,
-  Vibration,
   View
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
@@ -55,14 +53,6 @@ type DvlaVehicle = {
 
 type ReminderOffsetDays = 1 | 7 | 30;
 type ReminderKind = "mot" | "roadTax" | "insurance";
-type ReminderAlarm = {
-  carId: string;
-  registrationNumber: string;
-  kind: ReminderKind;
-  title: string;
-  body: string;
-  dueDate: string;
-};
 
 type CarReminders = {
   motEnabled: boolean;
@@ -99,30 +89,6 @@ const DEFAULT_REMINDERS: CarReminders = {
 
 type ScheduleCarNotificationOptions = {
   immediateKinds?: ReminderKind[];
-  onImmediateAlarm?: (alarm: ReminderAlarm) => void;
-  testDelaySeconds?: number;
-};
-
-type NativeAlarmPayload = ReminderAlarm & {
-  triggerAtMillis: number;
-};
-
-type MyCarAlarmModule = {
-  scheduleAlarm?: (alarm: NativeAlarmPayload) => void;
-  cancelCarAlarms?: (carId: string) => void;
-  getAlarmPermissions?: () => Promise<AlarmPermissionStatus>;
-  openExactAlarmSettings?: () => void;
-  openFullScreenAlarmSettings?: () => void;
-};
-
-const myCarAlarmModule = NativeModules.MyCarAlarmModule as
-  | MyCarAlarmModule
-  | undefined;
-
-type AlarmPermissionStatus = {
-  nativeModuleAvailable: boolean;
-  canScheduleExactAlarms: boolean;
-  canUseFullScreenIntent: boolean;
 };
 
 const NOTIFICATIONS_SUPPORTED = true;
@@ -359,36 +325,6 @@ function getWholeDaysUntil(eventDate: Date) {
   );
 }
 
-function isReminderKind(value: unknown): value is ReminderKind {
-  return value === "mot" || value === "roadTax" || value === "insurance";
-}
-
-function getAlarmFromNotification(
-  notification: Notifications.Notification
-): ReminderAlarm | null {
-  const data = notification.request.content.data;
-
-  if (
-    typeof data.carId !== "string" ||
-    typeof data.registrationNumber !== "string" ||
-    !isReminderKind(data.kind) ||
-    typeof data.title !== "string" ||
-    typeof data.body !== "string" ||
-    typeof data.dueDate !== "string"
-  ) {
-    return null;
-  }
-
-  return {
-    carId: data.carId,
-    registrationNumber: data.registrationNumber,
-    kind: data.kind,
-    title: data.title,
-    body: data.body,
-    dueDate: data.dueDate
-  };
-}
-
 async function registerForNotifications() {
   if (!NOTIFICATIONS_SUPPORTED) {
     return false;
@@ -427,24 +363,11 @@ async function cancelCarNotifications(car: StoredCar) {
     return;
   }
 
-  myCarAlarmModule?.cancelCarAlarms?.(car.id);
-
   await Promise.all(
     (car.notificationIds || []).map((notificationId) =>
       Notifications.cancelScheduledNotificationAsync(notificationId)
     )
   );
-}
-
-function scheduleNativeAlarm(alarm: ReminderAlarm, triggerAtMillis: number) {
-  try {
-    myCarAlarmModule?.scheduleAlarm?.({
-      ...alarm,
-      triggerAtMillis
-    });
-  } catch {
-    // Native full-screen alarms are best-effort; Expo notifications still run.
-  }
 }
 
 async function scheduleCarNotifications(
@@ -475,40 +398,7 @@ async function scheduleCarNotifications(
     const body = `${formatDueMessage(label, eventDate)} ${formatDate(
       eventDate.toISOString()
     )}`;
-    const alarm: ReminderAlarm = {
-      carId: car.id,
-      registrationNumber: car.registrationNumber,
-      kind,
-      title,
-      body,
-      dueDate: eventDate.toISOString()
-    };
     const triggerDate = subtractDays(eventDate, offsetDays);
-
-    if (options.testDelaySeconds && immediateKinds.has(kind)) {
-      const triggerAtMillis = Date.now() + options.testDelaySeconds * 1000;
-      scheduleNativeAlarm(alarm, triggerAtMillis);
-
-      if (hasPermissions) {
-        await Notifications.scheduleNotificationAsync({
-          content: {
-            title,
-            body,
-            sound: "default",
-            priority: Notifications.AndroidNotificationPriority.MAX,
-            data: alarm
-          },
-          trigger: {
-            type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-            seconds: options.testDelaySeconds,
-            channelId: "reminders"
-          }
-        });
-      }
-
-      return;
-    }
-
     if (!hasPermissions) {
       return;
     }
@@ -518,37 +408,28 @@ async function scheduleCarNotifications(
         return;
       }
 
-      const delaySeconds = options.testDelaySeconds || 1;
       await Notifications.scheduleNotificationAsync({
         content: {
           title,
           body,
           sound: "default",
-          priority: Notifications.AndroidNotificationPriority.MAX,
-          data: alarm
+          priority: Notifications.AndroidNotificationPriority.MAX
         },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-          seconds: delaySeconds,
+          seconds: 1,
           channelId: "reminders"
         }
       });
-      scheduleNativeAlarm(alarm, Date.now() + delaySeconds * 1000);
-      if (!options.testDelaySeconds) {
-        options.onImmediateAlarm?.(alarm);
-      }
       return;
     }
-
-    scheduleNativeAlarm(alarm, triggerDate.getTime());
 
     const notificationId = await Notifications.scheduleNotificationAsync({
       content: {
         title,
         body,
         sound: "default",
-        priority: Notifications.AndroidNotificationPriority.MAX,
-        data: alarm
+        priority: Notifications.AndroidNotificationPriority.MAX
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
@@ -932,65 +813,11 @@ function App() {
   const [testRoadTaxInput, setTestRoadTaxInput] = useState("");
   const [testInsuranceInput, setTestInsuranceInput] = useState("");
   const [testReminderStatus, setTestReminderStatus] = useState("");
-  const [alarmPermissionStatus, setAlarmPermissionStatus] =
-    useState<AlarmPermissionStatus | null>(null);
   const [editModalVisible, setEditModalVisible] = useState(false);
-  const [activeAlarm, setActiveAlarm] = useState<ReminderAlarm | null>(null);
   const selectedCar = cars.find((car) => car.id === selectedCarId) || null;
 
   useEffect(() => {
     void loadStoredState();
-  }, []);
-
-  useEffect(() => {
-    if (!activeAlarm) {
-      Vibration.cancel();
-      return;
-    }
-
-    Vibration.vibrate([0, 800, 350, 800], false);
-
-    return () => Vibration.cancel();
-  }, [activeAlarm]);
-
-  useEffect(() => {
-    function showReminderAlarm(alarm: ReminderAlarm) {
-      setActiveAlarm(alarm);
-      setSelectedCarId(alarm.carId);
-      setScreen("carDetails");
-    }
-
-    const receivedSubscription =
-      Notifications.addNotificationReceivedListener((notification) => {
-        const alarm = getAlarmFromNotification(notification);
-        if (alarm) {
-          showReminderAlarm(alarm);
-        }
-      });
-
-    const responseSubscription =
-      Notifications.addNotificationResponseReceivedListener((response) => {
-        const alarm = getAlarmFromNotification(response.notification);
-        if (alarm) {
-          showReminderAlarm(alarm);
-        }
-      });
-
-    void Notifications.getLastNotificationResponseAsync().then((response) => {
-      if (!response) {
-        return;
-      }
-
-      const alarm = getAlarmFromNotification(response.notification);
-      if (alarm) {
-        showReminderAlarm(alarm);
-      }
-    });
-
-    return () => {
-      receivedSubscription.remove();
-      responseSubscription.remove();
-    };
   }, []);
 
   useEffect(() => {
@@ -1003,11 +830,6 @@ function App() {
     const subscription = BackHandler.addEventListener(
       "hardwareBackPress",
       () => {
-        if (activeAlarm) {
-          setActiveAlarm(null);
-          return true;
-        }
-
         if (editModalVisible) {
           setEditModalVisible(false);
           return true;
@@ -1023,7 +845,7 @@ function App() {
     );
 
     return () => subscription.remove();
-  }, [activeAlarm, editModalVisible, screen]);
+  }, [editModalVisible, screen]);
 
   useEffect(() => {
     refreshSpinValue.setValue(0);
@@ -1294,14 +1116,7 @@ function App() {
     const updatedCar = updater(existingCar);
     const notificationIds = await scheduleCarNotifications(
       updatedCar,
-      {
-        ...notificationOptions,
-        onImmediateAlarm: (alarm) => {
-          setActiveAlarm(alarm);
-          setSelectedCarId(alarm.carId);
-          setScreen("carDetails");
-        }
-      }
+      notificationOptions
     );
     const nextCars = cars.map((car) =>
       car.id === id
@@ -1323,7 +1138,6 @@ function App() {
     setTestRoadTaxInput(car?.dvla?.taxDueDate || "");
     setTestInsuranceInput(car?.insuranceExpiry || "");
     setTestReminderStatus("");
-    setAlarmPermissionStatus(null);
     setScreen("carDetails");
   }
 
@@ -1332,7 +1146,6 @@ function App() {
     setNicknameInput("");
     setInsuranceExpiryInput("");
     setTestReminderStatus("");
-    setAlarmPermissionStatus(null);
     setScreen("addCar");
   }
 
@@ -1407,69 +1220,12 @@ function App() {
 
   }
 
-  async function checkNativeAlarmPermissions() {
-    if (!myCarAlarmModule?.getAlarmPermissions) {
-      setAlarmPermissionStatus(null);
-      setTestReminderStatus(
-        "Native alarm module is not available in this installed build."
-      );
-      return;
-    }
-
-    try {
-      const status = await myCarAlarmModule.getAlarmPermissions();
-      setAlarmPermissionStatus(status);
-      setTestReminderStatus(
-        status.canScheduleExactAlarms && status.canUseFullScreenIntent
-          ? "Native alarm permissions look enabled."
-          : "Android is blocking one or more alarm permissions. Open the settings below."
-      );
-    } catch {
-      setAlarmPermissionStatus(null);
-      setTestReminderStatus("Could not check native alarm permissions.");
-    }
-  }
-
-  function openExactAlarmSettings() {
-    if (!myCarAlarmModule?.openExactAlarmSettings) {
-      setTestReminderStatus(
-        "Native alarm module is not available in this installed build."
-      );
-      return;
-    }
-
-    myCarAlarmModule.openExactAlarmSettings();
-  }
-
-  function openFullScreenAlarmSettings() {
-    if (!myCarAlarmModule?.openFullScreenAlarmSettings) {
-      setTestReminderStatus(
-        "Native alarm module is not available in this installed build."
-      );
-      return;
-    }
-
-    myCarAlarmModule.openFullScreenAlarmSettings();
-  }
-
   function getReminderToggleOptions(
     value: boolean,
     kind: ReminderKind
   ): ScheduleCarNotificationOptions {
     if (!value) {
       return { immediateKinds: [] };
-    }
-
-    if (selectedCar?.isReminderTest) {
-      setTestReminderStatus(
-        myCarAlarmModule?.scheduleAlarm
-          ? "Native test alarm armed. Lock the phone or switch apps now; it should fire in about 10 seconds."
-          : "Expo test notification armed, but native alarm module is not available in this build."
-      );
-      return {
-        immediateKinds: [kind],
-        testDelaySeconds: 10
-      };
     }
 
     return { immediateKinds: [kind] };
@@ -1722,56 +1478,6 @@ function App() {
                 >
                   <Text style={styles.primaryButtonText}>Save test dates</Text>
                 </Pressable>
-                <View style={styles.alarmSettingsPanel}>
-                  <Pressable
-                    style={styles.alarmSettingsButton}
-                    onPress={() => void checkNativeAlarmPermissions()}
-                  >
-                    <Text style={styles.alarmSettingsButtonText}>
-                      Check alarm permissions
-                    </Text>
-                  </Pressable>
-                  {alarmPermissionStatus ? (
-                    <View style={styles.alarmPermissionRows}>
-                      <Text style={styles.helperText}>
-                        Native module:{" "}
-                        {alarmPermissionStatus.nativeModuleAvailable
-                          ? "Available"
-                          : "Missing"}
-                      </Text>
-                      <Text style={styles.helperText}>
-                        Exact alarms:{" "}
-                        {alarmPermissionStatus.canScheduleExactAlarms
-                          ? "Allowed"
-                          : "Blocked"}
-                      </Text>
-                      <Text style={styles.helperText}>
-                        Full-screen alarms:{" "}
-                        {alarmPermissionStatus.canUseFullScreenIntent
-                          ? "Allowed"
-                          : "Blocked"}
-                      </Text>
-                    </View>
-                  ) : null}
-                  <View style={styles.alarmSettingsActions}>
-                    <Pressable
-                      style={styles.alarmSettingsButton}
-                      onPress={openExactAlarmSettings}
-                    >
-                      <Text style={styles.alarmSettingsButtonText}>
-                        Exact alarm settings
-                      </Text>
-                    </Pressable>
-                    <Pressable
-                      style={styles.alarmSettingsButton}
-                      onPress={openFullScreenAlarmSettings}
-                    >
-                      <Text style={styles.alarmSettingsButtonText}>
-                        Full-screen settings
-                      </Text>
-                    </Pressable>
-                  </View>
-                </View>
                 {testReminderStatus ? (
                   <Text style={styles.helperText}>{testReminderStatus}</Text>
                 ) : null}
@@ -1947,31 +1653,6 @@ function App() {
           </ScrollView>
         ) : null}
 
-        <Modal
-          animationType="fade"
-          transparent
-          visible={Boolean(activeAlarm)}
-          onRequestClose={() => setActiveAlarm(null)}
-        >
-          <View style={styles.alarmOverlay}>
-            <View style={styles.alarmCard}>
-              <Text style={styles.alarmEyebrow}>Reminder Alarm</Text>
-              <Text style={styles.alarmTitle}>
-                {activeAlarm?.registrationNumber}
-              </Text>
-              <Text style={styles.alarmMessage}>{activeAlarm?.body}</Text>
-              <Text style={styles.alarmDate}>
-                Due date: {formatDate(activeAlarm?.dueDate)}
-              </Text>
-              <Pressable
-                style={styles.alarmDismissButton}
-                onPress={() => setActiveAlarm(null)}
-              >
-                <Text style={styles.alarmDismissButtonText}>Dismiss</Text>
-              </Pressable>
-            </View>
-          </View>
-        </Modal>
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -2198,35 +1879,6 @@ const styles = StyleSheet.create({
     color: "#94a3b8",
     fontSize: 13
   },
-  alarmSettingsPanel: {
-    gap: 10,
-    borderTopWidth: 1,
-    borderTopColor: "#1e293b",
-    paddingTop: 12
-  },
-  alarmPermissionRows: {
-    gap: 4
-  },
-  alarmSettingsActions: {
-    flexDirection: "row",
-    gap: 8
-  },
-  alarmSettingsButton: {
-    flex: 1,
-    backgroundColor: "#0f172a",
-    borderColor: "#334155",
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    alignItems: "center"
-  },
-  alarmSettingsButtonText: {
-    color: "#f8fafc",
-    fontSize: 12,
-    fontWeight: "800",
-    textAlign: "center"
-  },
   toggleRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2321,64 +1973,6 @@ const styles = StyleSheet.create({
     gap: 14,
     borderWidth: 1,
     borderColor: "#1f2937"
-  },
-  alarmOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(5,10,20,0.92)",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 20
-  },
-  alarmCard: {
-    width: "100%",
-    maxWidth: 390,
-    backgroundColor: "#f8fafc",
-    borderRadius: 20,
-    padding: 22,
-    gap: 14,
-    borderWidth: 2,
-    borderColor: "#f59e0b"
-  },
-  alarmEyebrow: {
-    color: "#b45309",
-    fontSize: 12,
-    fontWeight: "900",
-    textTransform: "uppercase",
-    letterSpacing: 1
-  },
-  alarmTitle: {
-    color: "#111827",
-    backgroundColor: "#facc15",
-    alignSelf: "flex-start",
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 8,
-    fontSize: 28,
-    fontWeight: "900",
-    letterSpacing: 1
-  },
-  alarmMessage: {
-    color: "#111827",
-    fontSize: 20,
-    fontWeight: "800",
-    lineHeight: 28
-  },
-  alarmDate: {
-    color: "#475569",
-    fontSize: 14,
-    fontWeight: "700"
-  },
-  alarmDismissButton: {
-    backgroundColor: "#111827",
-    borderRadius: 14,
-    paddingVertical: 14,
-    alignItems: "center",
-    marginTop: 4
-  },
-  alarmDismissButtonText: {
-    color: "#f8fafc",
-    fontSize: 16,
-    fontWeight: "900"
   }
 });
 
