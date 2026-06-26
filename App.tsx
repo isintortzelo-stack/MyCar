@@ -75,7 +75,9 @@ const DVLA_API_URL =
   "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles";
 
 const RENDER_BACKEND_URL = "https://mycar-backend-du9w.onrender.com";
-const BACKEND_REQUEST_TIMEOUT_MS = 15000;
+const BACKEND_REQUEST_TIMEOUT_MS = 25000;
+const BACKEND_REQUEST_MAX_ATTEMPTS = 3;
+const BACKEND_RETRY_DELAY_MS = 1500;
 const STALE_BACKEND_HOSTS = new Set(["10.47.151.239"]);
 const REMINDER_TEST_REGISTRATION = "TESTREM";
 
@@ -200,6 +202,42 @@ async function fetchVehicleFromBackend(
   registrationNumber: string,
   backendUrl: string
 ): Promise<DvlaVehicle> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= BACKEND_REQUEST_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await fetchVehicleFromBackendOnce(registrationNumber, backendUrl);
+    } catch (error) {
+      lastError = error;
+
+      if (
+        !isRetryableBackendError(error) ||
+        attempt === BACKEND_REQUEST_MAX_ATTEMPTS
+      ) {
+        if (
+          isRetryableBackendError(error) &&
+          attempt === BACKEND_REQUEST_MAX_ATTEMPTS
+        ) {
+          throw new BackendRequestError(
+            `${getErrorMessage(error)} Tried ${BACKEND_REQUEST_MAX_ATTEMPTS} times.`,
+            false
+          );
+        }
+
+        throw error;
+      }
+
+      await delay(BACKEND_RETRY_DELAY_MS);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Backend request failed.");
+}
+
+async function fetchVehicleFromBackendOnce(
+  registrationNumber: string,
+  backendUrl: string
+): Promise<DvlaVehicle> {
   const normalizedBaseUrl = backendUrl.trim().replace(/\/+$/, "");
   const abortController = new AbortController();
   const timeoutId = setTimeout(
@@ -223,12 +261,16 @@ async function fetchVehicleFromBackend(
     });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(
-        `Backend request timed out after ${BACKEND_REQUEST_TIMEOUT_MS / 1000} seconds. Check the backend is running and the phone is on the same Wi-Fi.`
+      throw new BackendRequestError(
+        `Backend request timed out after ${BACKEND_REQUEST_TIMEOUT_MS / 1000} seconds.`,
+        true
       );
     }
 
-    throw error;
+    throw new BackendRequestError(
+      "Backend request failed before the server responded. Check your internet connection and try again.",
+      true
+    );
   } finally {
     clearTimeout(timeoutId);
   }
@@ -236,8 +278,9 @@ async function fetchVehicleFromBackend(
   if (!response.ok) {
     const errorText = await response.text();
     const parsedError = tryExtractErrorMessage(errorText);
-    throw new Error(
-      `Backend request failed (${response.status}). ${parsedError || errorText || "No response body."}`
+    throw new BackendRequestError(
+      `Backend request failed (${response.status}). ${parsedError || errorText || "No response body."}`,
+      isRetryableBackendStatus(response.status)
     );
   }
 
@@ -246,7 +289,7 @@ async function fetchVehicleFromBackend(
   };
 
   if (!payload.vehicle) {
-    throw new Error("Backend returned no vehicle payload");
+    throw new BackendRequestError("Backend returned no vehicle payload.", true);
   }
 
   return payload.vehicle;
@@ -366,6 +409,46 @@ function isExpiredDate(value: string | undefined) {
   }
 
   return getWholeDaysUntil(date) < 0;
+}
+
+function getDateTime(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const date = parseManualDate(value) || new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.getTime();
+}
+
+function getEarliestExpiryTime(car: StoredCar) {
+  const expiryTimes = [
+    getDateTime(car.dvla?.motExpiryDate),
+    getDateTime(car.dvla?.taxDueDate),
+    getDateTime(car.insuranceExpiry)
+  ].filter((value): value is number => typeof value === "number");
+
+  if (expiryTimes.length === 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return Math.min(...expiryTimes);
+}
+
+function sortCarsByEarliestExpiry(carsToSort: StoredCar[]) {
+  return [...carsToSort].sort((first, second) => {
+    const firstExpiry = getEarliestExpiryTime(first);
+    const secondExpiry = getEarliestExpiryTime(second);
+
+    if (firstExpiry !== secondExpiry) {
+      return firstExpiry - secondExpiry;
+    }
+
+    return first.registrationNumber.localeCompare(second.registrationNumber);
+  });
 }
 
 function formatMotDate(car: StoredCar) {
@@ -740,6 +823,29 @@ function AddCarIcon() {
   );
 }
 
+function SearchIcon() {
+  return (
+    <Svg width={28} height={28} viewBox="0 0 28 28" fill="none">
+      <Path
+        d="M12.4 20.1C16.7 20.1 20.1 16.7 20.1 12.4C20.1 8.1 16.7 4.7 12.4 4.7C8.1 4.7 4.7 8.1 4.7 12.4C4.7 16.7 8.1 20.1 12.4 20.1Z"
+        stroke="#111827"
+        strokeWidth={2.4}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Line
+        x1="18.1"
+        y1="18.1"
+        x2="23.4"
+        y2="23.4"
+        stroke="#111827"
+        strokeWidth={2.4}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
 function RefreshArrowsIcon() {
   return (
     <Svg width={27} height={27} viewBox="0 0 27 27" fill="none">
@@ -844,6 +950,30 @@ function getErrorMessage(error: unknown) {
   return "Unexpected error";
 }
 
+class BackendRequestError extends Error {
+  retryable: boolean;
+
+  constructor(message: string, retryable: boolean) {
+    super(message);
+    this.name = "BackendRequestError";
+    this.retryable = retryable;
+  }
+}
+
+function isRetryableBackendError(error: unknown) {
+  return error instanceof BackendRequestError && error.retryable;
+}
+
+function isRetryableBackendStatus(status: number) {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function tryExtractErrorMessage(value: string) {
   try {
     const parsed = JSON.parse(value) as { error?: string };
@@ -918,7 +1048,15 @@ function App() {
   const [testInsuranceInput, setTestInsuranceInput] = useState("");
   const [testReminderStatus, setTestReminderStatus] = useState("");
   const [editModalVisible, setEditModalVisible] = useState(false);
+  const [checkModalVisible, setCheckModalVisible] = useState(false);
+  const [checkRegistrationInput, setCheckRegistrationInput] = useState("");
+  const [checkVehicleResult, setCheckVehicleResult] = useState<DvlaVehicle | null>(
+    null
+  );
+  const [checkResultModalVisible, setCheckResultModalVisible] = useState(false);
+  const [checkingVehicle, setCheckingVehicle] = useState(false);
   const selectedCar = cars.find((car) => car.id === selectedCarId) || null;
+  const visibleCars = cars.filter((car) => !car.isReminderTest);
 
   useEffect(() => {
     void loadStoredState();
@@ -928,12 +1066,27 @@ function App() {
     if (screen === "carDetails" && !selectedCar) {
       setScreen("garage");
     }
+
+    if (screen === "carDetails" && selectedCar?.isReminderTest) {
+      setSelectedCarId(null);
+      setScreen("garage");
+    }
   }, [screen, selectedCar]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener(
       "hardwareBackPress",
       () => {
+        if (checkResultModalVisible) {
+          closeCheckResultModal();
+          return true;
+        }
+
+        if (checkModalVisible) {
+          closeCheckModal();
+          return true;
+        }
+
         if (editModalVisible) {
           setEditModalVisible(false);
           return true;
@@ -949,7 +1102,7 @@ function App() {
     );
 
     return () => subscription.remove();
-  }, [editModalVisible, screen]);
+  }, [checkModalVisible, checkResultModalVisible, editModalVisible, screen]);
 
   useEffect(() => {
     refreshSpinValue.setValue(0);
@@ -1060,8 +1213,8 @@ function App() {
     const nextCar: StoredCar = {
       id: createCarId(registrationNumber),
       registrationNumber,
-      nickname: nicknameInput.trim(),
-      insuranceExpiry: insuranceExpiryInput.trim(),
+      nickname: "",
+      insuranceExpiry: "",
       reminders: { ...DEFAULT_REMINDERS },
       notificationIds: []
     };
@@ -1253,6 +1406,66 @@ function App() {
     setScreen("addCar");
   }
 
+  function openCheckModal() {
+    setCheckRegistrationInput("");
+    setCheckVehicleResult(null);
+    setCheckResultModalVisible(false);
+    setCheckModalVisible(true);
+  }
+
+  function closeCheckModal() {
+    setCheckModalVisible(false);
+    setCheckResultModalVisible(false);
+    setCheckRegistrationInput("");
+    setCheckVehicleResult(null);
+    setCheckingVehicle(false);
+  }
+
+  function closeCheckResultModal() {
+    setCheckResultModalVisible(false);
+    setCheckVehicleResult(null);
+  }
+
+  async function checkVehicle() {
+    const registrationNumber = normalizeRegistrationNumber(checkRegistrationInput);
+    const effectiveBackendUrl = savedBackendUrl || defaultBackendUrl;
+
+    if (!registrationNumber) {
+      Alert.alert("Missing registration", "Enter a registration number first.");
+      return;
+    }
+
+    if (dataSourceMode === "dvla" && !savedApiKey) {
+      Alert.alert("Missing API key", "Save your DVLA API key before checking.");
+      return;
+    }
+
+    if (dataSourceMode === "backend" && !effectiveBackendUrl) {
+      Alert.alert(
+        "Backend unavailable",
+        "The hosted backend URL is not configured."
+      );
+      return;
+    }
+
+    setCheckingVehicle(true);
+    setCheckVehicleResult(null);
+
+    try {
+      const dvla =
+        dataSourceMode === "backend"
+          ? await fetchVehicleFromBackend(registrationNumber, effectiveBackendUrl)
+          : await fetchVehicleFromDvla(registrationNumber, savedApiKey);
+
+      setCheckVehicleResult(dvla);
+      setCheckResultModalVisible(true);
+    } catch (error) {
+      Alert.alert("Check failed", getErrorMessage(error));
+    } finally {
+      setCheckingVehicle(false);
+    }
+  }
+
   async function saveCarDetails() {
     if (!selectedCar) {
       return;
@@ -1379,34 +1592,44 @@ function App() {
             <View style={styles.hero}>
               <View style={styles.heroTitleRow}>
                 <Text style={styles.title}>My Garage</Text>
-                <Pressable
-                  accessibilityLabel="Add car"
-                  style={styles.addCarIconButton}
-                  onPress={openAddCar}
-                >
-                  <AddCarIcon />
-                </Pressable>
+                <View style={styles.heroTitleActions}>
+                  <Pressable
+                    accessibilityLabel="Check vehicle"
+                    style={styles.heroIconButton}
+                    onPress={openCheckModal}
+                  >
+                    <SearchIcon />
+                  </Pressable>
+                  <Pressable
+                    accessibilityLabel="Add car"
+                    style={styles.heroIconButton}
+                    onPress={openAddCar}
+                  >
+                    <AddCarIcon />
+                  </Pressable>
+                </View>
               </View>
             </View>
 
             <View style={styles.garageList}>
-              {cars.length === 0 ? (
+              {visibleCars.length === 0 ? (
                 <Text style={styles.emptyState}>
                   No cars saved yet. Add a registration to start building your garage.
                 </Text>
               ) : (
-                cars.map((car) => {
+                sortCarsByEarliestExpiry(visibleCars).map((car) => {
                   const isRefreshing = refreshingId === car.id;
 
                   return (
-                    <Pressable
-                      key={car.id}
-                      style={styles.carCard}
-                      onPress={() => openCarDetails(car.id)}
-                    >
+                    <View key={car.id} style={styles.carCard}>
                       <View style={styles.cardHeader}>
                         <View>
-                          <Text style={styles.regPlate}>{car.registrationNumber}</Text>
+                          <Pressable
+                            accessibilityLabel={`Open ${car.registrationNumber} details`}
+                            onPress={() => openCarDetails(car.id)}
+                          >
+                            <Text style={styles.regPlate}>{car.registrationNumber}</Text>
+                          </Pressable>
                           <Text style={styles.cardMeta}>
                             {car.nickname || ""}
                           </Text>
@@ -1416,10 +1639,7 @@ function App() {
                             accessibilityLabel="Refresh vehicle data"
                             style={styles.refreshIconButton}
                             disabled={isRefreshing}
-                            onPress={(event) => {
-                              event.stopPropagation();
-                              void refreshCar(car.id);
-                            }}
+                            onPress={() => void refreshCar(car.id)}
                           >
                             <Animated.View
                               style={[
@@ -1458,7 +1678,7 @@ function App() {
                         />
                       </View>
 
-                    </Pressable>
+                    </View>
                   );
                 })
               )}
@@ -1476,26 +1696,8 @@ function App() {
                 placeholder="AB12CDE"
                 autoCapitalize="characters"
               />
-              <Field
-                label="Nickname"
-                value={nicknameInput}
-                onChangeText={setNicknameInput}
-                placeholder="Golf GTI"
-              />
-              <Field
-                label="Insurance expiry"
-                value={insuranceExpiryInput}
-                onChangeText={setInsuranceExpiryInput}
-                placeholder="31/12/2026"
-              />
               <Pressable style={styles.primaryButton} onPress={() => void addCar()}>
                 <Text style={styles.primaryButtonText}>Save car</Text>
-              </Pressable>
-              <Pressable
-                style={styles.secondaryButton}
-                onPress={() => void addReminderTestCar()}
-              >
-                <Text style={styles.secondaryButtonText}>Add reminder test car</Text>
               </Pressable>
             </Section>
           </ScrollView>
@@ -1556,38 +1758,6 @@ function App() {
                 <DetailRow label="Colour" value={selectedCar.dvla?.colour || "Unknown"} />
               </View>
             </Section>
-
-            {selectedCar.isReminderTest ? (
-              <Section title="Test Reminder Dates">
-                <Field
-                  label="MOT date"
-                  value={testMotExpiryInput}
-                  onChangeText={setTestMotExpiryInput}
-                  placeholder="2026-12-31"
-                />
-                <Field
-                  label="Road tax date"
-                  value={testRoadTaxInput}
-                  onChangeText={setTestRoadTaxInput}
-                  placeholder="2026-12-31"
-                />
-                <Field
-                  label="Insurance date"
-                  value={testInsuranceInput}
-                  onChangeText={setTestInsuranceInput}
-                  placeholder="2026-12-31"
-                />
-                <Pressable
-                  style={styles.primaryButton}
-                  onPress={() => void saveTestReminderDates()}
-                >
-                  <Text style={styles.primaryButtonText}>Save test dates</Text>
-                </Pressable>
-                {testReminderStatus ? (
-                  <Text style={styles.helperText}>{testReminderStatus}</Text>
-                ) : null}
-              </Section>
-            ) : null}
 
             <Section title="Reminders">
               <ToggleRow
@@ -1758,6 +1928,105 @@ function App() {
           </ScrollView>
         ) : null}
 
+        <Modal
+          animationType="fade"
+          transparent
+          visible={checkModalVisible}
+          onRequestClose={closeCheckModal}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <View style={styles.modalTitleRow}>
+                <Text style={styles.sectionTitle}>Check Vehicle</Text>
+                <Pressable
+                  accessibilityLabel="Close vehicle check"
+                  style={styles.modalCloseButton}
+                  onPress={closeCheckModal}
+                >
+                  <Text style={styles.modalCloseText}>X</Text>
+                </Pressable>
+              </View>
+
+              <Field
+                label="Registration"
+                value={checkRegistrationInput}
+                onChangeText={setCheckRegistrationInput}
+                placeholder="AB12CDE"
+                autoCapitalize="characters"
+              />
+              <Pressable
+                style={[
+                  styles.primaryButton,
+                  checkingVehicle && styles.disabledButton
+                ]}
+                disabled={checkingVehicle}
+                onPress={() => void checkVehicle()}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {checkingVehicle ? "Checking..." : "Check"}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          animationType="fade"
+          transparent
+          visible={checkResultModalVisible && !!checkVehicleResult}
+          onRequestClose={closeCheckResultModal}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <View style={styles.modalTitleRow}>
+                <Text style={styles.sectionTitle}>Vehicle Check</Text>
+                <Pressable
+                  accessibilityLabel="Close vehicle check result"
+                  style={styles.modalCloseButton}
+                  onPress={closeCheckResultModal}
+                >
+                  <Text style={styles.modalCloseText}>X</Text>
+                </Pressable>
+              </View>
+
+              {checkVehicleResult ? (
+                <View style={styles.detailGrid}>
+                  <DetailRow
+                    label="Make"
+                    value={checkVehicleResult.make || "Unknown"}
+                  />
+                  <DetailRow
+                    label="MOT"
+                    value={
+                      isExpiredDate(checkVehicleResult.motExpiryDate)
+                        ? "Expired"
+                        : formatDate(checkVehicleResult.motExpiryDate)
+                    }
+                    valueStyle={
+                      isExpiredDate(checkVehicleResult.motExpiryDate)
+                        ? styles.expiredValue
+                        : undefined
+                    }
+                  />
+                  <DetailRow
+                    label="Road Tax"
+                    value={
+                      isExpiredDate(checkVehicleResult.taxDueDate)
+                        ? "Expired"
+                        : formatDate(checkVehicleResult.taxDueDate)
+                    }
+                    valueStyle={
+                      isExpiredDate(checkVehicleResult.taxDueDate)
+                        ? styles.expiredValue
+                        : undefined
+                    }
+                  />
+                </View>
+              ) : null}
+            </View>
+          </View>
+        </Modal>
+
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -1829,6 +2098,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 14
   },
+  heroTitleActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10
+  },
   eyebrow: {
     color: "#f59e0b",
     textTransform: "uppercase",
@@ -1842,7 +2116,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     flexShrink: 1
   },
-  addCarIconButton: {
+  heroIconButton: {
     width: 46,
     height: 46,
     borderRadius: 14,
@@ -1901,6 +2175,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: 14,
     alignItems: "center"
+  },
+  disabledButton: {
+    opacity: 0.65
   },
   primaryButtonText: {
     color: "#111827",
@@ -2100,6 +2377,27 @@ const styles = StyleSheet.create({
     gap: 14,
     borderWidth: 1,
     borderColor: "#1f2937"
+  },
+  modalTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12
+  },
+  modalCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#0f172a",
+    borderWidth: 1,
+    borderColor: "#334155"
+  },
+  modalCloseText: {
+    color: "#f8fafc",
+    fontSize: 15,
+    fontWeight: "900"
   }
 });
 

@@ -6,6 +6,7 @@
   "scripts": {
     "start": "powershell -ExecutionPolicy Bypass -File scripts/start-expo-lan.ps1",
     "start:dev": "powershell -ExecutionPolicy Bypass -File scripts/start-expo-lan.ps1 --dev-client",
+    "start:tunnel": "expo start --dev-client --tunnel",
     "android": "powershell -ExecutionPolicy Bypass -File scripts/start-expo-lan.ps1 --android",
     "android:dev": "expo run:android",
     "web": "expo start --web",
